@@ -77,10 +77,23 @@
       loop_control:
         loop_var: node_name
 
+    - name: Refresh node list after adding nodes
+      uri:
+        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
+        method: GET
+        user: "{{ hs_username }}"
+        password: "{{ hs_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+        status_code: 200
+        body_format: json
+      register: nodes_response_updated
+
     # 6. Filter nodes with nodeType OTHER
     - name: Filter nodes with nodeType OTHER
       set_fact:
-        other_nodes: "{{ nodes_response.json | selectattr('nodeType', 'equalto', 'OTHER') | list }}"
+        other_nodes: "{{ nodes_response_updated.json | selectattr('nodeType', 'equalto', 'OTHER') | list }}"
 
     # 7. Prepare node list for volume group
     - name: Build node locations for volume group
