@@ -19,7 +19,7 @@
         status_code: 200
         body_format: json
       register: nodes_response
-      retries: 20
+      retries: 40
       delay: 15
       until: nodes_response.status == 200
 
