@@ -77,28 +77,34 @@
       loop_control:
         loop_var: node_name
 
-    - name: Refresh node list after adding nodes
-      uri:
-        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
-        method: GET
-        user: "{{ hs_username }}"
-        password: "{{ hs_password }}"
-        force_basic_auth: true
-        validate_certs: false
-        return_content: true
-        status_code: 200
-        body_format: json
-      register: nodes_response_updated
+    - name: Refresh node list after adding nodes and show names
+      block:
+        - name: Refresh node list after adding nodes
+          uri:
+            url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
+            method: GET
+            user: "{{ hs_username }}"
+            password: "{{ hs_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            return_content: true
+            status_code: 200
+            body_format: json
+          register: nodes_response_updated
 
-    - name: Show updated node list
-      debug:
-        msg: "Node: {{ item.name }} | IP: {{ item.mgmtIpAddress.address | default('N/A') }}"
-      loop: "{{ nodes_response_updated.json | selectattr('nodeType', 'equalto', 'OTHER') }}"
+        - name: Show node names from updated node list
+          debug:
+            msg: "{{ item.name }}"
+          loop: "{{ nodes_response_updated.json }}"
 
     # 6. Filter nodes with nodeType OTHER
     - name: Filter nodes with nodeType OTHER
       set_fact:
         other_nodes: "{{ nodes_response_updated.json | selectattr('nodeType', 'equalto', 'OTHER') | list }}"
+    
+    - name: Wait 5 seconds
+      pause:
+        seconds: 5
 
     # 7. Prepare node list for volume group
     - name: Build node locations for volume group
