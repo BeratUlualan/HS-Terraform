@@ -92,11 +92,6 @@
             body_format: json
           register: nodes_response_updated
 
-        - name: Show node names from updated node list
-          debug:
-            msg: "{{ item.name }}"
-          loop: "{{ nodes_response_updated.json }}"
-
     # 6. Filter nodes with nodeType OTHER
     - name: Filter nodes with nodeType OTHER
       set_fact:
