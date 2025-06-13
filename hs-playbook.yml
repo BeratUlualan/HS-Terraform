@@ -93,7 +93,7 @@
     - name: Show updated node list
       debug:
         msg: "Node: {{ item.name }} | IP: {{ item.mgmtIpAddress.address | default('N/A') }}"
-      loop: "{{ nodes_response_updated.json }}"
+      loop: "{{ nodes_response_updated.json | selectattr('nodeType', 'equalto', 'OTHER') }}"
 
     # 6. Filter nodes with nodeType OTHER
     - name: Filter nodes with nodeType OTHER
