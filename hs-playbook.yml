@@ -1,25 +1,15 @@
----
-- name: Find OTHER nodes, create volume group, and add storage volumes
-  hosts: localhost
+- hosts: localhost
   gather_facts: false
-
-  vars_files:
-    - Configs/anvil.yml
-
   vars:
-    data_cluster_mgmt_ip: 10.200.112.181
-    hsuser: admin 
-    password: 'HSpace01!' 
-    hammerspace_api_url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
     hs_username: "{{ hsuser }}"
     hs_password: "{{ password }}"
     volume_group_name: "vg_test_auto"
 
   tasks:
-    # Step 1: Get all nodes
-    - name: Get nodes with volumes
+    # 1. Get nodes
+    - name: Get all nodes
       uri:
-        url: "{{ hammerspace_api_url }}"
+        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
         method: GET
         user: "{{ hs_username }}"
         password: "{{ hs_password }}"
@@ -30,12 +20,69 @@
         body_format: json
       register: nodes_response
 
-    # Step 2: Filter nodes with nodeType OTHER
+    # 2. Get volume groups
+    - name: Get all volume groups
+      uri:
+        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/volume-groups"
+        method: GET
+        user: "{{ hs_username }}"
+        password: "{{ hs_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+        status_code: 200
+        body_format: json
+      register: volume_groups_response
+
+    # 3. Extract current node and volume group names
+    - name: Extract existing node and volume group names
+      set_fact:
+        existing_node_names: "{{ nodes_response.json | map(attribute='name') | list }}"
+        vg_names: "{{ volume_groups_response.json | map(attribute='name') | list }}"
+
+    # 4. Add missing nodes only
+    - name: Add storage system if not present
+      uri:
+        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
+        user: "{{ hsuser }}"
+        password: "{{ password }}"
+        method: POST
+        body: '{{ storage }}'
+        force_basic_auth: yes
+        status_code: 202
+        body_format: json
+        validate_certs: no
+        timeout: 180
+      loop: "{{ storages }}"
+      loop_control:
+        loop_var: storage
+      when: storage.name not in existing_node_names and storage.nodeType == "OTHER"
+      register: node_add
+
+    # 5. Wait for all required nodes to be present
+    - name: Wait for all required nodes to be present
+      uri:
+        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes/{{ node_name | urlencode }}"
+        user: "{{ hsuser }}"
+        password: "{{ password }}"
+        method: GET
+        force_basic_auth: yes
+        status_code: 200
+        validate_certs: no
+      register: node_check
+      until: node_check.status == 200
+      retries: 10
+      delay: 5
+      loop: "{{ storages | selectattr('nodeType', 'equalto', 'OTHER') | map(attribute='name') | list }}"
+      loop_control:
+        loop_var: node_name
+
+    # 6. Filter nodes with nodeType OTHER
     - name: Filter nodes with nodeType OTHER
       set_fact:
         other_nodes: "{{ nodes_response.json | selectattr('nodeType', 'equalto', 'OTHER') | list }}"
 
-    # Step 3: Prepare node list for volume group
+    # 7. Prepare node list for volume group
     - name: Build node locations for volume group
       set_fact:
         vg_node_locations: >-
@@ -49,8 +96,8 @@
             }{% if not loop.last %},{% endif %}
           {% endfor %}]
 
-    # Step 4: Create volume group with those nodes
-    - name: Create a volume group with OTHER nodes
+    # 8. Create the volume group if missing
+    - name: Create a volume group with OTHER nodes (if missing)
       uri:
         url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/volume-groups"
         user: "{{ hsuser }}"
@@ -74,9 +121,9 @@
         body_format: json
         validate_certs: no
       register: volume_group_create_result
-      when: vg_node_locations | length > 0
+      when: vg_node_locations | length > 0 and volume_group_name not in vg_names
 
-    # Step 5: Extract non-reserved logical volumes from OTHER nodes
+    # 9. Extract non-reserved logical volumes from OTHER nodes
     - name: Extract non-reserved logical volumes from OTHER nodes
       set_fact:
         non_reserved_volumes: >-
@@ -89,7 +136,7 @@
             | list
           }}
 
-    # Step 6: Show found volumes
+    # 10. Show found volumes for next task
     - name: Display found volumes for next task
       debug:
         msg: "Export Path: {{ item.exportPath }} | Node: {{ item.node.name }}"
@@ -98,7 +145,7 @@
         label: "{{ item.name }}"
       when: non_reserved_volumes | length > 0
 
-    # Step 7: Create volume variables for each non-reserved volume
+    # 11. Create volume variables for each non-reserved volume
     - name: Create volume variables for each non-reserved volume
       set_fact:
         volumes_for_next_task: >-
@@ -119,7 +166,7 @@
           {% endfor %}]
       when: non_reserved_volumes | length > 0
 
-    # Step 8: Add storage volumes (as before)
+    # 12. Add storage volumes (as before)
     - name: Adding storage volumes
       block:
         # Check that the storage system exists
@@ -143,7 +190,7 @@
             label: "{{ item.name }}"
 
         - name: Fail if storage system not found
-          fail: 
+          fail:
             msg: "Storage System {{ item.item.node.name }} not found"
           when: item.status == 404
           loop: "{{ __node_results.results }}"
