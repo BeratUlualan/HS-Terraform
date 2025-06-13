@@ -7,7 +7,7 @@
 
   tasks:
     # 1. Get nodes
-    - name: Get all nodes
+    - name: Get all nodes (with retries)
       uri:
         url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
         method: GET
@@ -19,6 +19,9 @@
         status_code: 200
         body_format: json
       register: nodes_response
+      retries: 10
+      delay: 15
+      until: nodes_response.status == 200
 
     # 2. Get volume groups
     - name: Get all volume groups
