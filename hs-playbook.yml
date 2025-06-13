@@ -102,7 +102,7 @@
     
     - name: Wait 5 seconds
       pause:
-        seconds: 5
+        seconds: 10
 
     # 7. Prepare node list for volume group
     - name: Build node locations for volume group
