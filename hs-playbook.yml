@@ -90,6 +90,11 @@
         body_format: json
       register: nodes_response_updated
 
+    - name: Show updated node list
+      debug:
+        msg: "Node: {{ item.name }} | IP: {{ item.mgmtIpAddress.address | default('N/A') }}"
+      loop: "{{ nodes_response_updated.json }}"
+
     # 6. Filter nodes with nodeType OTHER
     - name: Filter nodes with nodeType OTHER
       set_fact:
