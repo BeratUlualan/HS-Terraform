@@ -23,7 +23,18 @@
           - storages | length > 0
         fail_msg: "'storages' variable must be defined and contain at least one item"
 
-    # Step 2: Retrieve all cluster nodes with retries to handle possible connection or cluster readiness delays
+    # Step 2: Notify about expected wait time and retry logic for getting all nodes
+    - name: WARNING: Getting all nodes may take up to 20 minutes (retries up to 40 min if not ready)
+      debug:
+        msg: |
+          [WARNING] The next step (retrieving all cluster nodes) may take up to 20 minutes depending on cluster readiness.
+          The script will keep retrying for up to 40 minutes if the Anvil management API is not responding.
+          Until the management API becomes available, this playbook will continue to retry at intervals.
+          If connectivity or API issues persist, the playbook will eventually fail after the timeout.
+
+    # Step 3: Retrieve all cluster nodes with retries to handle possible connection or cluster readiness delays
+    # WARNING: This step may take up to 20 minutes. The playbook will retry for up to 40 minutes
+    # if the Anvil management API does not respond. It will continue retrying until the endpoint is ready or until retries are exhausted.
     - name: Get all nodes (with retries)
       uri:
         <<: *common_api_params
