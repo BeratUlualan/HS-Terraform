@@ -100,9 +100,9 @@
       set_fact:
         other_nodes: "{{ nodes_response_updated.json | selectattr('nodeType', 'equalto', 'OTHER') | list }}"
     
-    - name: Wait 5 seconds
+    - name: Wait 15 seconds
       pause:
-        seconds: 10
+        seconds: 15
 
     # 7. Prepare node list for volume group
     - name: Build node locations for volume group
