@@ -32,8 +32,8 @@
         return_content: true
         status_code: 200
       register: nodes_response
-      retries: 40
-      delay: 15
+      retries: 60
+      delay: 30
       until: nodes_response.status == 200
       failed_when: nodes_response.status not in [200]
       changed_when: false
