@@ -1,77 +1,106 @@
 - hosts: localhost
   gather_facts: false
   vars:
+    # Centralized configuration for API credentials and endpoints for maintainability
     hs_username: "{{ hsuser }}"
     hs_password: "{{ password }}"
+    data_cluster_api_base: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest"
+    # Common API parameters reused for each uri task via YAML anchor for DRY principle
+    common_api_params: &common_api_params
+      user: "{{ hs_username }}"
+      password: "{{ hs_password }}"
+      force_basic_auth: true
+      validate_certs: false
+      body_format: json
     volume_group_name: "vg_test_auto"
 
   tasks:
-    # Step 1: Retrieve all nodes from the Hammerspace cluster, with retries to handle connectivity issues
+    # Step 1: Assert that the 'storages' input variable is defined and non-empty before proceeding
+    - name: Ensure 'storages' variable is defined and not empty
+      assert:
+        that:
+          - storages is defined
+          - storages | length > 0
+        fail_msg: "'storages' variable must be defined and contain at least one item"
+
+    # Step 2: Retrieve all cluster nodes with retries to handle possible connection or cluster readiness delays
     - name: Get all nodes (with retries)
       uri:
-        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
+        <<: *common_api_params
+        url: "{{ data_cluster_api_base }}/nodes"
         method: GET
-        user: "{{ hs_username }}"
-        password: "{{ hs_password }}"
-        force_basic_auth: true
-        validate_certs: false
         return_content: true
         status_code: 200
-        body_format: json
       register: nodes_response
       retries: 40
       delay: 15
       until: nodes_response.status == 200
+      failed_when: nodes_response.status not in [200]
+      changed_when: false
 
-    # Step 2: Retrieve all existing volume groups
+    # Step 3: Retrieve all existing volume groups with retry logic for robustness
     - name: Get all volume groups
       uri:
-        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/volume-groups"
+        <<: *common_api_params
+        url: "{{ data_cluster_api_base }}/volume-groups"
         method: GET
-        user: "{{ hs_username }}"
-        password: "{{ hs_password }}"
-        force_basic_auth: true
-        validate_certs: false
         return_content: true
         status_code: 200
-        body_format: json
       register: volume_groups_response
+      retries: 10
+      delay: 5
+      until: volume_groups_response.status == 200
+      failed_when: volume_groups_response.status not in [200]
+      changed_when: false
 
-    # Step 3: Extract names of all nodes and volume groups for later checks
+    # Step 4: Parse and save the list of node and volume group names for quick lookup in later steps
     - name: Extract existing node and volume group names
       set_fact:
         existing_node_names: "{{ nodes_response.json | map(attribute='name') | list }}"
         vg_names: "{{ volume_groups_response.json | map(attribute='name') | list }}"
 
-    # Step 4: Add new storage nodes of type 'OTHER' if not already present
-    - name: Add storage system if not present
-      uri:
-        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
-        user: "{{ hsuser }}"
-        password: "{{ password }}"
-        method: POST
-        body: '{{ storage }}'
-        force_basic_auth: yes
-        status_code: 202
-        body_format: json
-        validate_certs: no
-        timeout: 180
-      loop: "{{ storages }}"
-      loop_control:
-        loop_var: storage
-      when: storage.name not in existing_node_names and storage.nodeType == "OTHER"
-      register: node_add
+    # Step 5: Identify new 'OTHER' node types that need to be added, filtering out already existing nodes
+    - name: Check for new 'OTHER' storage nodes
+      set_fact:
+        storages_to_add: "{{ storages | selectattr('nodeType', 'equalto', 'OTHER') | rejectattr('name', 'in', existing_node_names) | list }}"
+      when: storages is defined and storages | length > 0
 
-    # Step 5: Confirm all required nodes are available before proceeding
+    # Step 6: Output a debug summary of storage nodes that will be added (if any)
+    - name: Show storages to be added (debug)
+      debug:
+        var: storages_to_add
+
+    # Step 7: Add new 'OTHER' storage nodes if needed, using block/rescue for error recovery and retries for API robustness
+    - name: Add new storage nodes if needed
+      block:
+        - name: Add storage system if not present
+          uri:
+            <<: *common_api_params
+            url: "{{ data_cluster_api_base }}/nodes"
+            method: POST
+            body: '{{ item }}'
+            status_code: 202
+            timeout: 180
+          loop: "{{ storages_to_add }}"
+          loop_control:
+            label: "{{ item.name }}"
+          register: node_add_results
+          retries: 10
+          delay: 10
+          until: node_add_results.status == 202 or node_add_results.status == 409
+          failed_when: node_add_results.status not in [202, 409]
+      rescue:
+        - name: Log failure to add nodes
+          debug:
+            msg: "Failed to add one or more nodes: {{ node_add_results }}"
+
+    # Step 8: Wait for all required 'OTHER' nodes to become available in the cluster
     - name: Wait for all required nodes to be present
       uri:
-        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes/{{ node_name | urlencode }}"
-        user: "{{ hsuser }}"
-        password: "{{ password }}"
+        <<: *common_api_params
+        url: "{{ data_cluster_api_base }}/nodes/{{ node_name | urlencode }}"
         method: GET
-        force_basic_auth: yes
         status_code: 200
-        validate_certs: no
       register: node_check
       until: node_check.status == 200
       retries: 10
@@ -79,34 +108,48 @@
       loop: "{{ storages | selectattr('nodeType', 'equalto', 'OTHER') | map(attribute='name') | list }}"
       loop_control:
         loop_var: node_name
+      failed_when: node_check.status != 200
+      changed_when: false
 
-    # Step 6: Refresh the node list to capture any changes after node addition
-    - name: Refresh node list after adding nodes and show names
-      block:
-        - name: Refresh node list after adding nodes
-          uri:
-            url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes"
-            method: GET
-            user: "{{ hs_username }}"
-            password: "{{ hs_password }}"
-            force_basic_auth: true
-            validate_certs: false
-            return_content: true
-            status_code: 200
-            body_format: json
-          register: nodes_response_updated
+    # Step 9: Refresh the cluster node list to reflect any recent changes (new nodes)
+    - name: Refresh node list after adding nodes
+      uri:
+        <<: *common_api_params
+        url: "{{ data_cluster_api_base }}/nodes"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: nodes_response_updated
+      retries: 5
+      delay: 5
+      until: nodes_response_updated.status == 200
+      failed_when: nodes_response_updated.status != 200
+      changed_when: false
 
-    # Step 7: Filter nodes to get only those with type 'OTHER'
+    # Step 10: Show final cluster node names after all add operations
+    - name: Display updated node names
+      debug:
+        msg: "Node list after additions: {{ nodes_response_updated.json | map(attribute='name') | list }}"
+
+    # Step 11: Filter all 'OTHER' type nodes for subsequent volume group operations
     - name: Filter nodes with nodeType OTHER
       set_fact:
         other_nodes: "{{ nodes_response_updated.json | selectattr('nodeType', 'equalto', 'OTHER') | list }}"
 
-    # Step 8: Add a short pause to ensure system consistency before volume group operations
-    - name: Wait 10 seconds
+    # Step 12: Assert that we have at least one 'OTHER' node to proceed with volume group management
+    - name: Ensure there are OTHER nodes
+      assert:
+        that:
+          - other_nodes is defined
+          - other_nodes | length > 0
+        fail_msg: "No 'OTHER' nodes found, cannot continue"
+
+    # Step 13: Wait briefly to allow the cluster state to stabilize before continuing
+    - name: Wait for system consistency
       pause:
         seconds: 10
 
-    # Step 9: Construct the node location structure needed for volume group creation
+    # Step 14: Construct a list of node location dictionaries required for volume group creation
     - name: Build node locations for volume group
       set_fact:
         vg_node_locations: >-
@@ -120,34 +163,45 @@
             }{% if not loop.last %},{% endif %}
           {% endfor %}]
 
-    # Step 10: Create the volume group (if it doesn't already exist) using the 'OTHER' nodes
-    - name: Create a volume group with OTHER nodes (if missing)
-      uri:
-        url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/volume-groups"
-        user: "{{ hsuser }}"
-        password: "{{ password }}"
-        method: POST
-        body: >-
-          {{
-            {
-              "name": volume_group_name,
-              "_type": "VOLUME_GROUP",
-              "expressions": [
-                {
-                  "operator": "IN",
-                  "locations": vg_node_locations
-                }
-              ]
-            }
-          }}
-        force_basic_auth: yes
-        status_code: 200
-        body_format: json
-        validate_certs: no
-      register: volume_group_create_result
-      when: vg_node_locations | length > 0 and volume_group_name not in vg_names
+    # Step 15: Assert that the node locations list for the volume group is not empty
+    - name: Ensure vg_node_locations is not empty
+      assert:
+        that:
+          - vg_node_locations is defined
+          - vg_node_locations | length > 0
+        fail_msg: "No valid node locations found for volume group creation"
 
-    # Step 11: Find logical volumes that are not reserved from nodes of type 'OTHER'
+    # Step 16: Create the volume group (if missing) using a block/rescue for error handling
+    - name: Create the volume group (if missing)
+      block:
+        - name: Create a volume group with OTHER nodes (if missing)
+          uri:
+            <<: *common_api_params
+            url: "{{ data_cluster_api_base }}/volume-groups"
+            method: POST
+            body: >-
+              {{
+                {
+                  "name": volume_group_name,
+                  "_type": "VOLUME_GROUP",
+                  "expressions": [
+                    {
+                      "operator": "IN",
+                      "locations": vg_node_locations
+                    }
+                  ]
+                }
+              }}
+            status_code: 200
+          register: volume_group_create_result
+          when: volume_group_name not in vg_names
+          failed_when: volume_group_create_result.status != 200
+      rescue:
+        - name: Log failure to create volume group
+          debug:
+            msg: "Failed to create volume group: {{ volume_group_create_result }}"
+
+    # Step 17: Extract logical volumes (not reserved) from 'OTHER' nodes for use in storage volume creation
     - name: Extract non-reserved logical volumes from OTHER nodes
       set_fact:
         non_reserved_volumes: >-
@@ -160,7 +214,15 @@
             | list
           }}
 
-    # Step 12: Display found non-reserved volumes for user visibility and debugging
+    # Step 18: Assert that there are non-reserved logical volumes to work with
+    - name: Ensure there are non-reserved volumes
+      assert:
+        that:
+          - non_reserved_volumes is defined
+          - non_reserved_volumes | length > 0
+        fail_msg: "No non-reserved logical volumes available for storage volume creation"
+
+    # Step 19: Display details of the logical volumes that will be processed for storage volume creation
     - name: Display found volumes for next task
       debug:
         msg: "Export Path: {{ item.exportPath }} | Node: {{ item.node.name }}"
@@ -169,8 +231,8 @@
         label: "{{ item.name }}"
       when: non_reserved_volumes | length > 0
 
-    # Step 13: Prepare data structure for storage volume creation tasks
-    - name: Create volume variables for each non-reserved volume
+    # Step 20: Prepare the data structure needed to create storage volumes for each logical volume
+    - name: Prepare storage volume objects for each logical volume
       set_fact:
         volumes_for_next_task: >-
           [{% for item in non_reserved_volumes %}
@@ -188,72 +250,46 @@
               "accessType": "READ_WRITE"
             }{% if not loop.last %},{% endif %}
           {% endfor %}]
-      when: non_reserved_volumes | length > 0
 
-    # Step 14: Add discovered logical volumes as storage volumes, with status checks and error handling
-    - name: Adding storage volumes
+    # Step 21: Add storage volumes using block/rescue for error handling and retries for async operations
+    - name: Add storage volumes (with error recovery)
       block:
-        # Step 14.1: Verify that the storage node exists before creating volumes on it
-        - name: Check for valid storage system
+        # Step 21.1: Verify that each referenced node exists before adding a volume to it
+        - name: Check for valid storage system before adding volume
           uri:
-            url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/nodes/{{ item.node.name|urlencode }}"
-            user: "{{ hsuser }}"
-            password: "{{ password }}"
+            <<: *common_api_params
+            url: "{{ data_cluster_api_base }}/nodes/{{ item.node.name|urlencode }}"
             method: GET
-            body: ''
-            force_basic_auth: yes
             status_code: 200
-            body_format: json
-            validate_certs: no
             timeout: 60
           register: __node_results
-          failed_when:
-            - __node_results.status == 500
+          failed_when: __node_results.status != 200
           loop: "{{ volumes_for_next_task }}"
           loop_control:
             label: "{{ item.name }}"
 
-        # Step 14.2: Fail early if a referenced storage node was not found
-        - name: Fail if storage system not found
-          fail:
-            msg: "Storage System {{ item.item.node.name }} not found"
-          when: item.status == 404
-          loop: "{{ __node_results.results }}"
-          loop_control:
-            label: "{{ item.item.node.name }}"
-
-        # Step 14.3: Add the storage volume using the prepared data
+        # Step 21.2: Add the storage volume object for each valid logical volume/node pair
         - name: Add the storage volume
           uri:
-            url: "https://{{ data_cluster_mgmt_ip }}:8443/mgmt/v1.2/rest/storage-volumes?force=true&skipPerfTest=false&createPlacementObjectives=true"
-            user: "{{ hsuser }}"
-            password: "{{ password }}"
+            <<: *common_api_params
+            url: "{{ data_cluster_api_base }}/storage-volumes?force=true&skipPerfTest=false&createPlacementObjectives=true"
             method: POST
             body: '{{ item }}'
-            force_basic_auth: yes
             status_code: 202
-            body_format: json
-            validate_certs: no
             timeout: 180
           register: __results
-          failed_when:
-            - __results.status == 500
+          failed_when: __results.status not in [202, 409]
           loop: "{{ volumes_for_next_task }}"
           loop_control:
             label: "{{ item.name }}"
 
-        # Step 14.4: Wait until the storage volume addition operation is completed
-        - name: Check status of add storage volume
+        # Step 21.3: Wait until the storage volume addition operation is complete
+        - name: Wait for storage volume addition to complete
           uri:
+            <<: *common_api_params
             url: "{{ item.location }}"
-            user: "{{ hsuser }}"
-            password: "{{ password }}"
             method: GET
-            body: '{}'
-            force_basic_auth: yes
             status_code: 200
-            body_format: json
-            validate_certs: no
           register: _result
           until: _result.json.status == "COMPLETED"
           retries: 10
@@ -262,5 +298,20 @@
           loop: "{{ __results.results }}"
           loop_control:
             label: "{{ item.item.name }}"
+      rescue:
+        - name: Log failure to add storage volumes
+          debug:
+            msg: "Failed to add one or more storage volumes: {{ __results }}"
 
-      when: non_reserved_volumes | length > 0
+    # Step 22: Output a summary of final node state, created volume group, and processed storage volumes
+    - name: Summary - final OTHER nodes
+      debug:
+        msg: "Final node names: {{ nodes_response_updated.json | map(attribute='name') | list }}"
+
+    - name: Summary - created volume group (if any)
+      debug:
+        var: volume_group_create_result
+
+    - name: Summary - non-reserved volumes processed
+      debug:
+        msg: "Non-reserved logical volumes processed: {{ volumes_for_next_task | map(attribute='name') | list }}"
