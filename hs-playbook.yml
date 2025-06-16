@@ -24,7 +24,7 @@
         fail_msg: "'storages' variable must be defined and contain at least one item"
 
     # Step 2: Notify about expected wait time and retry logic for getting all nodes
-    - name: WARNING: Getting all nodes may take up to 20 minutes (retries up to 40 min if not ready)
+    - name: WARNING - Getting all nodes may take up to 20 minutes (retries up to 40 min if not ready)
       debug:
         msg: |
           [WARNING] The next step (retrieving all cluster nodes) may take up to 20 minutes depending on cluster readiness.
