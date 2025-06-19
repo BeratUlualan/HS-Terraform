@@ -1,0 +1,21 @@
+share:
+  name: "{{ share_name }}"
+  path: /{{ share_name }}
+  maxShareSize: 0
+  alertThreshold: 90
+  maxShareSizeType: TB
+  smbAliases: []
+  exportOptions:
+  - subnet: '*'
+    rootSquash: false
+    accessPermissions: RW
+  shareSnapshots: []
+  shareObjectives:
+  - objective:
+      name: no-atime
+    applicability: 'TRUE'
+  - objective:
+      name: confine-to-{{ volume_group_name }}
+    applicability: 'TRUE'
+  smbBrowsable: true
+  shareSizeLimit: 0
