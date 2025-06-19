@@ -3,16 +3,8 @@
   vars:
     hs_username: "{{ hsuser }}"
     hs_password: "{{ password }}"
-    volume_group_name: "vg_test_auto"
-    share_name: "test04"
-
-
-- hosts: localhost
-  gather_facts: false
-  vars:
-    hs_username: "{{ hsuser }}"
-    hs_password: "{{ password }}"
-    volume_group_name: "vg_test_auto"
+    volume_group_name: "{{ volume_group_name }}"
+    share_name: "{{ share_name }}"
 
   tasks:
     # 1. Get nodes
